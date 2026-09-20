@@ -68,7 +68,7 @@
 
 ## 9. Hardware validation (operator, on the target machine)
 
-- [ ] 9.1 Confirm the target machine's Python is 3.11 or newer before deploying, since `pywizlight` requires it and the development environment sits exactly at that floor
-- [ ] 9.2 Pull the repository, install, write `.env` with the real bulb address, start the server, and verify the startup log shows the expected configuration
-- [ ] 9.3 Run the harness against the real bulb and verify every tool passes, each change is visible on the light, and the original state is restored
+- [x] 9.1 Confirm the target machine's Python is 3.11 or newer before deploying, since `pywizlight` requires it and the development environment sits exactly at that floor
+- [x] 9.2 Pull the repository, install, write `.env` with the real bulb address, start the server, and verify the startup log shows the expected configuration
+- [x] 9.3 Run the harness against the real bulb and verify every tool passes, each change is visible on the light, and the original state is restored
 - [ ] 9.4 Power the bulb off, and verify `get_light_state` reports it unreachable promptly and the server keeps running; power it back on and verify reachability returns without a restart
