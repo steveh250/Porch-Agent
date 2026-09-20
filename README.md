@@ -1,12 +1,65 @@
 # Porch Agent
 
-An MCP server that exposes a single [WiZ](https://www.wizconnected.com/) smart bulb to an AI
-agent, over streamable-HTTP. It speaks to the bulb on the local network with
-[pywizlight](https://github.com/sbidy/pywizlight).
+**An MCP server wrapped around a WiZ smart lightbulb, so that an AI agent can control it.**
 
-The bulb is assumed to be one you may switch off at the wall. The server treats
-"unreachable" as a normal state: it always starts, polls for the bulb in the background, and
-answers state queries instantly from a cache rather than blocking on a dead device.
+## What this is
+
+A [WiZ](https://www.wizconnected.com/) smart bulb is controllable only by sending messages to
+it over an undocumented UDP protocol on your local network. That is fine for a script, but an
+AI agent cannot use it: there is nothing for the agent to call.
+
+This project closes that gap. It is a server speaking the
+[Model Context Protocol](https://modelcontextprotocol.io) (MCP) — the standard way to give an
+agent a set of tools it can call. The server turns the bulb's UDP protocol into eight plain
+tools (`turn_on`, `set_brightness`, `set_scene`, and so on). Point an agent at it, and the
+bulb becomes something the agent can see the state of and operate, in the same way it uses any
+other tool.
+
+```
+   +-----------+   MCP over HTTP    +--------------+   UDP :38899   +--------+
+   |   Agent   | -----------------> | Porch Agent  | -------------> |  WiZ   |
+   |           |   "turn_on",       |  MCP server  |   setPilot,    |  bulb  |
+   |           |   "set_scene"      |              |   getPilot     |        |
+   +-----------+ <----------------- +--------------+ <------------- +--------+
+                    light state          ^
+                                         | polls every 30s so it always
+                                         | knows whether the bulb is there
+```
+
+So instead of writing code to talk to the bulb, you can ask an agent to "dim the porch light
+to 20%" or "set the porch to Cozy", and it calls the right tool with the right arguments. The
+tools are described to the agent in units it gets right first time: brightness as a
+**percentage**, scenes by **name** rather than a numeric id, and colour temperature validated
+against the range your particular bulb actually supports.
+
+The transport is streamable-HTTP rather than stdio, which means the agent does not have to run
+on the same machine as the bulb. The server runs wherever it can reach the bulb; the agent
+connects to it over the network.
+
+### One deliberate design choice
+
+The bulb is assumed to be one you may switch off at the wall. The server therefore treats
+"unreachable" as a normal state rather than an error: it always starts even with the bulb dead,
+polls for it in the background, and answers state queries instantly from a cache. A naive
+wrapper would stall every call for seconds waiting on a bulb that isn't there.
+
+## What you get
+
+- **The server** (`porch-agent`) — the thing your agent talks to. See
+  [Run the server](#run-the-server).
+- **The test harness** (`harness.py`) — a standalone script that drives a running server
+  against your real bulb and reports pass/fail per tool, so you can confirm the whole path
+  works. See [Run the test harness](#run-the-test-harness).
+
+## Quick start
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .                  # install
+cp .env.example .env              # then set WIZ_BULB_IP to your bulb's address
+porch-agent                       # start the server on http://127.0.0.1:8000/mcp
+python harness.py                 # in another terminal: check it against the real bulb
+```
 
 ## Requirements
 
@@ -68,7 +121,27 @@ INFO  porch_agent: Request timeout: 5s
 INFO  porch_agent.bulb: Bulb at 192.168.1.42:38899 is now reachable
 ```
 
-Point your agent at `http://<host>:<port><path>`.
+### Connecting an agent
+
+Point your agent at the endpoint the server logged — by default
+`http://127.0.0.1:8000/mcp`. Most MCP clients take a URL for an HTTP server; in a JSON config
+that usually looks like:
+
+```json
+{
+  "mcpServers": {
+    "porch-agent": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp"
+    }
+  }
+}
+```
+
+Once connected, the agent discovers the eight tools by itself. You can then ask it things like
+"what is the porch light doing?", "dim the porch to 20%", or "set the porch light to Cozy" and
+it will pick the matching tool. The server also tells the agent, in its instructions, that the
+bulb may be powered off and that this is expected rather than a fault.
 
 ### Reaching it from another machine
 
@@ -114,6 +187,60 @@ from a script. It distinguishes the two failures worth telling apart:
 | `1` | One or more checks failed |
 | `2` | Could not reach the **server** — is it running? |
 | `3` | Server is fine, but it reports the **bulb** as unreachable |
+
+### What it checks
+
+1. **The tool list** — that all eight tools are advertised, naming any that are missing rather
+   than skipping them, and that there are no unexpected extras.
+2. **Reachability** — that the server reports your bulb as reachable before it tries anything
+   else. If not, it stops there and says so.
+3. **Every tool, in sequence**, pausing between each so you can watch the light: on, full
+   brightness, dim, colour red, colour blue, warm white, a scene by name, then the same scene
+   in lower case to prove name matching ignores case.
+4. **Rejections** — that invalid input is refused rather than sent to the bulb: brightness of
+   150, a colour component of 300, a scene that does not exist. These are expected to fail, and
+   the harness fails if any of them *succeeds*.
+
+### It puts your light back
+
+The harness records the light's state before it starts and restores it when it finishes —
+including when a check fails partway through. Running it does not leave your porch light in an
+unexpected state.
+
+### Example output
+
+```
+Connecting to http://127.0.0.1:8000/mcp
+
+Tool list
+  [PASS] tool advertised: get_light_state
+  [PASS] tool advertised: turn_on
+  ...
+  [PASS] no unexpected tools
+
+Bulb reachability
+  [PASS] get_light_state -- on=False bright=13%
+  [PASS] bulb reachable
+
+  Recorded original state: {'on': False, 'brightness_pct': 13, ...}
+
+Visible changes (watch the light)
+  [PASS] turn_on -- on=True bright=13%
+  [PASS] set_brightness 100% -- on=True bright=100%
+  [PASS] set_scene 'Cozy' -- on=True bright=20%
+  ...
+
+Rejections (these SHOULD fail)
+  [PASS] set_brightness 150 rejected -- [validation_error] brightness_pct must be between 0 and 100, got 150.
+  ...
+
+Restoring original state via turn_off({})
+  [PASS] original state restored
+
+==============================================================
+  26 passed, 0 failed, 26 checks total
+==============================================================
+```
 
 ## Tools
 
