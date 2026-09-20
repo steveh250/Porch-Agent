@@ -20,9 +20,19 @@ their documentation:
 - **`uvicorn` and `starlette` are already hard dependencies of `mcp`**, so streamable-HTTP adds
   no packages. **`python-dotenv` is not** — it sits behind `mcp`'s `cli` extra and must be
   declared directly.
-- **DNS-rebinding protection is on by default.** `TransportSecuritySettings`
-  has `enable_dns_rebinding_protection=True` with `allowed_hosts` unset, so a server bound to
-  anything but loopback rejects requests on the `Host` header until hosts are allow-listed.
+- **Host-header protection has no safe default; it must be configured deliberately.**
+  `TransportSecuritySettings` does default `enable_dns_rebinding_protection=True`, but that is
+  not what a server gets by default, and neither obvious choice works:
+  - Passing **no** transport settings **disables protection entirely** — the middleware reads
+    `settings or TransportSecuritySettings(enable_dns_rebinding_protection=False)`, so `None`
+    means off, for backwards compatibility.
+  - Passing settings with an **empty `allowed_hosts`** rejects **every** request, loopback
+    included, with `421 Misdirected Request`.
+
+  So the server must pass settings that name the hosts it will accept, including loopback, or
+  it is either unprotected or unreachable. (Corrected after implementation: an earlier version
+  of this document described protection as simply "on by default", and the first
+  implementation passed an empty allow-list and could not serve its own loopback clients.)
 - **The bulb is often powered off**, and a UDP request to a dead bulb costs the full timeout.
 - **No hardware is reachable from the development environment**, so nothing here can be
   validated locally beyond import and startup; the operator validates on the target machine.
@@ -166,10 +176,20 @@ keeping it out enforces the spec's rule that it must not import server internals
 
 ### Binding and host allow-listing
 
-Defaults bind loopback. When `MCP_HOST` is non-loopback and `MCP_ALLOWED_HOSTS` is empty, the
-server logs a warning naming the variable at startup. Silence here is the failure mode worth
-designing against: the server appears healthy while rejecting every remote request, which reads
-as a broken server rather than a configuration gap.
+Defaults bind loopback. Because neither of the SDK's implicit behaviours is usable (see
+Context), the server always constructs transport settings explicitly: when `MCP_ALLOWED_HOSTS`
+is empty it allow-lists loopback — `127.0.0.1` and `localhost`, bare and with the configured
+port — rather than passing nothing or an empty list. Protection therefore stays on, local
+clients work without configuration, and reaching the server from another machine requires
+setting `MCP_ALLOWED_HOSTS`.
+
+When `MCP_HOST` is non-loopback and `MCP_ALLOWED_HOSTS` is empty, the server logs a warning
+naming the variable at startup. Silence here is the failure mode worth designing against: the
+server appears healthy while rejecting every remote request with `421`, which reads as a broken
+server rather than a configuration gap.
+
+Origins are not allow-listed. Non-browser clients send no `Origin` header, which the middleware
+permits; a browser-based client would need origins added.
 
 ## Risks / Trade-offs
 
