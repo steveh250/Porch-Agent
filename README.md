@@ -176,6 +176,8 @@ In another:
 python harness.py                 # uses .env for the server address
 python harness.py --pause 3       # linger 3s on each change, easier to watch
 python harness.py --url http://192.168.1.10:8000/mcp
+python harness.py --scene-sample 10   # cycle through 10 random scenes, not 5
+python harness.py --seed 12345        # repeat a previous run's scene sample
 ```
 
 It prints a pass/fail line per tool and exits non-zero if anything failed, so it is usable
@@ -195,8 +197,11 @@ from a script. It distinguishes the two failures worth telling apart:
 2. **Reachability** — that the server reports your bulb as reachable before it tries anything
    else. If not, it stops there and says so.
 3. **Every tool, in sequence**, pausing between each so you can watch the light: on, full
-   brightness, dim, colour red, colour blue, warm white, a scene by name, then the same scene
-   in lower case to prove name matching ignores case.
+   brightness, dim, colour red, colour blue, warm white, then a **random sample of five
+   scenes** drawn from whatever your bulb advertises, and one of them again in lower case to
+   prove name matching ignores case. The sample is seeded and the seed is printed, so a run
+   that fails can be repeated exactly with `--seed`. `Custom Mode 1-10` are excluded, since
+   those slots are empty unless you have filled them in the WiZ app.
 4. **Rejections** — that invalid input is refused rather than sent to the bulb: brightness of
    150, a colour component of 300, a scene that does not exist. These are expected to fail, and
    the harness fails if any of them *succeeds*.

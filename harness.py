@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 from typing import Any
 
 from dotenv import load_dotenv
@@ -42,6 +43,23 @@ EXIT_OK = 0
 EXIT_CHECKS_FAILED = 1
 EXIT_NO_SERVER = 2
 EXIT_BULB_UNREACHABLE = 3
+
+DEFAULT_SCENE_SAMPLE = 5
+
+# "Custom Mode N" are user-defined slots that are empty unless you have filled
+# them in the WiZ app, so setting one proves nothing and may simply fail. They are
+# excluded from the random sample rather than producing failures that are not bugs.
+EXCLUDED_SCENE_PREFIXES = ("Custom Mode",)
+
+
+def choose_scenes(scene_names: list[str], count: int) -> list[str]:
+    """Pick a random sample of real, settable scenes from what the bulb reports."""
+    usable = [
+        name
+        for name in scene_names
+        if not name.startswith(EXCLUDED_SCENE_PREFIXES)
+    ]
+    return random.sample(usable, min(count, len(usable)))
 
 
 def default_url() -> str:
@@ -141,7 +159,7 @@ def restore_args(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return "turn_on", args
 
 
-async def run(url: str, pause: float) -> int:
+async def run(url: str, pause: float, scene_sample: int) -> int:
     report = Report()
     print(f"Connecting to {url}")
 
@@ -209,11 +227,18 @@ async def run(url: str, pause: float) -> int:
         await asyncio.sleep(pause)
 
         if scene_names:
-            pick = "Cozy" if "Cozy" in scene_names else scene_names[0]
-            await call(cl, report, f"set_scene {pick!r}", "set_scene", {"name": pick})
-            await asyncio.sleep(pause)
-            await call(cl, report, f"set_scene {pick.lower()!r} (case-insensitive)",
-                       "set_scene", {"name": pick.lower()})
+            sample = choose_scenes(scene_names, scene_sample)
+            print(f"\n  Scene sample ({len(sample)} of "
+                  f"{len(scene_names)} advertised): {', '.join(sample)}")
+            for scene in sample:
+                await call(cl, report, f"set_scene {scene!r}", "set_scene",
+                           {"name": scene})
+                await asyncio.sleep(pause)
+            # One of the sampled scenes again in lower case: the tool is specified to
+            # match names without regard to case.
+            lowered = sample[0].lower()
+            await call(cl, report, f"set_scene {lowered!r} (case-insensitive)",
+                       "set_scene", {"name": lowered})
             await asyncio.sleep(pause)
         else:
             report.add("set_scene", False, "bulb reported no supported scenes")
@@ -254,10 +279,20 @@ def main() -> int:
                         help="MCP endpoint URL (default: built from .env / MCP_* vars)")
     parser.add_argument("--pause", type=float, default=1.5,
                         help="seconds to linger on each visible change (default 1.5)")
+    parser.add_argument("--scene-sample", type=int, default=DEFAULT_SCENE_SAMPLE,
+                        help=f"how many random scenes to cycle through "
+                             f"(default {DEFAULT_SCENE_SAMPLE})")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="seed the scene sample, to repeat a particular run")
     ns = parser.parse_args()
+    if ns.scene_sample < 1:
+        parser.error("--scene-sample must be at least 1")
+    seed = ns.seed if ns.seed is not None else random.randrange(1_000_000)
+    random.seed(seed)
+    print(f"Scene sample seed: {seed}  (repeat this run with --seed {seed})")
     url = ns.url or default_url()
     try:
-        return asyncio.run(run(url, ns.pause))
+        return asyncio.run(run(url, ns.pause, ns.scene_sample))
     except KeyboardInterrupt:
         print("\nInterrupted.")
         return EXIT_CHECKS_FAILED
