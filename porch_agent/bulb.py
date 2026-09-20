@@ -41,6 +41,12 @@ class BulbUnreachable(BulbError):
     code = "bulb_unreachable"
 
 
+class BulbRejected(BulbError):
+    """The bulb answered, but refused the command."""
+
+    code = "bulb_rejected"
+
+
 class BulbUnknownModel(BulbError):
     code = "bulb_unknown_model"
 
@@ -213,10 +219,21 @@ class BulbController:
             raise BulbTimeout(
                 f"The bulb at {self.address} did not respond while trying to {what}."
             ) from None
-        except WizLightConnectionError:
-            raise BulbUnreachable(
-                f"The bulb at {self.address} is unreachable on the network "
-                f"while trying to {what}."
+        except WizLightConnectionError as exc:
+            # pywizlight raises this for two unrelated causes, but distinguishes them
+            # in the exception chain: the network case is `raise ... from ex` on an
+            # OSError, while a device error payload is raised unchained. So the cause
+            # tells us which happened.
+            if isinstance(exc.__cause__, OSError):
+                raise BulbUnreachable(
+                    f"The bulb at {self.address} is unreachable on the network "
+                    f"while trying to {what}: {exc}"
+                ) from None
+            raise BulbRejected(
+                f"The bulb at {self.address} refused the request to {what}: {exc}. "
+                f"The device is reachable but rejected the command; on recent WiZ "
+                f"firmware this is usually because writes must be signed, which "
+                f"pywizlight does not implement (see its issue #213)."
             ) from None
         except WizLightNotKnownBulb:
             raise BulbUnknownModel(
@@ -268,12 +285,17 @@ class BulbController:
             raise BulbError(f"The bulb at {self.address} returned no state.")
 
         raw_brightness = parser.get_brightness()
+        # A white-only bulb, or one currently in white mode, reports (None, None, None)
+        # rather than omitting the colour. Normalise that to "no colour".
+        rgb = parser.get_rgb()
+        if rgb is not None and all(channel is None for channel in rgb):
+            rgb = None
         self._state = LightState(
             on=bool(parser.get_state()),
             brightness_pct=(
                 raw_to_pct(raw_brightness) if raw_brightness is not None else None
             ),
-            rgb=parser.get_rgb(),
+            rgb=rgb,
             color_temp_kelvin=parser.get_colortemp(),
             scene=parser.get_scene(),
         )
