@@ -213,10 +213,14 @@ class BulbController:
             raise BulbTimeout(
                 f"The bulb at {self.address} did not respond while trying to {what}."
             ) from None
-        except WizLightConnectionError:
+        except WizLightConnectionError as exc:
+            # pywizlight conflates two causes here: a genuine OSError reaching the
+            # device, and the device replying with an error payload. The detail is
+            # the only way to tell them apart, so it must be carried through.
             raise BulbUnreachable(
-                f"The bulb at {self.address} is unreachable on the network "
-                f"while trying to {what}."
+                f"Failed to {what} — the bulb at {self.address} reported: {exc}. "
+                f"This is either a network problem reaching it, or the bulb rejecting "
+                f"the request."
             ) from None
         except WizLightNotKnownBulb:
             raise BulbUnknownModel(
@@ -268,12 +272,17 @@ class BulbController:
             raise BulbError(f"The bulb at {self.address} returned no state.")
 
         raw_brightness = parser.get_brightness()
+        # A white-only bulb, or one currently in white mode, reports (None, None, None)
+        # rather than omitting the colour. Normalise that to "no colour".
+        rgb = parser.get_rgb()
+        if rgb is not None and all(channel is None for channel in rgb):
+            rgb = None
         self._state = LightState(
             on=bool(parser.get_state()),
             brightness_pct=(
                 raw_to_pct(raw_brightness) if raw_brightness is not None else None
             ),
-            rgb=parser.get_rgb(),
+            rgb=rgb,
             color_temp_kelvin=parser.get_colortemp(),
             scene=parser.get_scene(),
         )
