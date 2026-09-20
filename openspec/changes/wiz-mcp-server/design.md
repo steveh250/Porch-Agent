@@ -13,16 +13,28 @@ their documentation:
   The shipped code uses port **`38899`**, returns `List[Optional[PilotParser]]` from
   `updateState()` (indexed at `[0]`; the README's form raises `AttributeError`), takes
   `PilotBuilder(colortemp=...)`, and spells the method `getMac()`. Implementation must follow
-  the code, not the README.
+  the code, not the README. Its `set_state()` is a related trap: the docstring implies a usable
+  "set appearance without switching on", but it emits a `setState` message bulbs do not
+  implement (see Decisions).
 - **`mcp` 2.x removed `FastMCP`.** `mcp.server.fastmcp` raises `ModuleNotFoundError` pointing at
   a migration guide; the class is now `MCPServer`, from `mcp.server.mcpserver`. Almost every MCP
   example in circulation is 1.x `FastMCP` code and will not run.
 - **`uvicorn` and `starlette` are already hard dependencies of `mcp`**, so streamable-HTTP adds
   no packages. **`python-dotenv` is not** — it sits behind `mcp`'s `cli` extra and must be
   declared directly.
-- **DNS-rebinding protection is on by default.** `TransportSecuritySettings`
-  has `enable_dns_rebinding_protection=True` with `allowed_hosts` unset, so a server bound to
-  anything but loopback rejects requests on the `Host` header until hosts are allow-listed.
+- **Host-header protection has no safe default; it must be configured deliberately.**
+  `TransportSecuritySettings` does default `enable_dns_rebinding_protection=True`, but that is
+  not what a server gets by default, and neither obvious choice works:
+  - Passing **no** transport settings **disables protection entirely** — the middleware reads
+    `settings or TransportSecuritySettings(enable_dns_rebinding_protection=False)`, so `None`
+    means off, for backwards compatibility.
+  - Passing settings with an **empty `allowed_hosts`** rejects **every** request, loopback
+    included, with `421 Misdirected Request`.
+
+  So the server must pass settings that name the hosts it will accept, including loopback, or
+  it is either unprotected or unreachable. (Corrected after implementation: an earlier version
+  of this document described protection as simply "on by default", and the first
+  implementation passed an empty allow-list and could not serve its own loopback clients.)
 - **The bulb is often powered off**, and a UDP request to a dead bulb costs the full timeout.
 - **No hardware is reachable from the development environment**, so nothing here can be
   validated locally beyond import and startup; the operator validates on the target machine.
@@ -107,6 +119,27 @@ and cached for the process lifetime.
 Consequence, specified deliberately: if the bulb has never been reachable, `set_color_temp` cannot
 validate its input and fails with "capabilities not yet known" rather than guessing a range.
 
+### Writes go through `turn_on`, not `set_state`
+
+Every write — switching on, and applying brightness, colour, colour temperature or a scene —
+is sent with `wizlight.turn_on(PilotBuilder(...))`, which emits the protocol's `setPilot`.
+
+`set_state()` looks like the better fit, since its docstring says it "doesn't turn on the
+light", which would allow changing appearance without switching the bulb on. It does not work:
+it emits a `setState` message that WiZ bulbs do not implement. pywizlight's own device fixtures
+raise `No handler for setState`, which is strong evidence real firmware rejects it too.
+
+**Consequence, accepted deliberately:** `set_brightness`, `set_color`, `set_color_temp` and
+`set_scene` also switch the light on. There is no supported way to change a bulb's appearance
+without doing so, and it is the behaviour an agent asking for an appearance most likely wants
+anyway. It is documented in the README so it does not surprise anyone.
+
+*Alternative:* hand-building a `setPilot` message without the `state` field, to set appearance
+while leaving power alone — rejected as reimplementing the message layer this design chose not
+to own, for a case no requirement asks for.
+
+(Added after implementation: the first version used `set_state` and every setter failed.)
+
 ### Agent-facing units and names differ from the wire
 
 | Agent-facing | Wire | Conversion |
@@ -122,6 +155,33 @@ reasons in percentages, and 0–255 invites values that mean nothing to it.
 
 Scene names are matched by case-folding, and an unknown name returns the valid list, so the agent
 self-corrects within one call instead of needing `list_scenes` first.
+
+### Input is validated before capabilities are consulted
+
+Within a tool, checks run in this order:
+
+1. **Device-independent validation** — is the value a whole number in range? Is the scene name a
+   WiZ scene at all? Neither question needs the bulb.
+2. **Capability checks** — does *this* bulb support colour? Is this Kelvin value inside the
+   range it reports? Is this scene in its supported list? All require a successful device read.
+3. **The device call.**
+
+The order matters because it decides what an agent is told when the bulb has never been
+reachable. With capabilities checked first, `set_brightness(150)` returns
+`capabilities_unknown` — which is true but useless, since the value is invalid at any bulb and
+would still be invalid once the bulb came back. Validating ranges first returns
+`validation_error` naming the accepted range, which the agent can act on immediately.
+
+Colour temperature is the deliberate exception: its valid range is a property of the specific
+bulb, so with no capabilities there is genuinely nothing to validate against, and
+`capabilities_unknown` is the honest answer. The specs carry that as an explicit scenario.
+
+Scene names get both stages: the name is matched against the full WiZ scene table first, so a
+typo is a validation error without a bulb, then narrowed to the bulb's supported list once
+capabilities are known — which is also what lets the error name the available scenes.
+
+(Added after implementation: the first version checked features first, so bad input against an
+unreachable bulb reported the wrong error.)
 
 ### Error mapping
 
@@ -166,10 +226,20 @@ keeping it out enforces the spec's rule that it must not import server internals
 
 ### Binding and host allow-listing
 
-Defaults bind loopback. When `MCP_HOST` is non-loopback and `MCP_ALLOWED_HOSTS` is empty, the
-server logs a warning naming the variable at startup. Silence here is the failure mode worth
-designing against: the server appears healthy while rejecting every remote request, which reads
-as a broken server rather than a configuration gap.
+Defaults bind loopback. Because neither of the SDK's implicit behaviours is usable (see
+Context), the server always constructs transport settings explicitly: when `MCP_ALLOWED_HOSTS`
+is empty it allow-lists loopback — `127.0.0.1` and `localhost`, bare and with the configured
+port — rather than passing nothing or an empty list. Protection therefore stays on, local
+clients work without configuration, and reaching the server from another machine requires
+setting `MCP_ALLOWED_HOSTS`.
+
+When `MCP_HOST` is non-loopback and `MCP_ALLOWED_HOSTS` is empty, the server logs a warning
+naming the variable at startup. Silence here is the failure mode worth designing against: the
+server appears healthy while rejecting every remote request with `421`, which reads as a broken
+server rather than a configuration gap.
+
+Origins are not allow-listed. Non-browser clients send no `Origin` header, which the middleware
+permits; a browser-based client would need origins added.
 
 ## Risks / Trade-offs
 
