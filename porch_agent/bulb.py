@@ -41,6 +41,12 @@ class BulbUnreachable(BulbError):
     code = "bulb_unreachable"
 
 
+class BulbRejected(BulbError):
+    """The bulb answered, but refused the command."""
+
+    code = "bulb_rejected"
+
+
 class BulbUnknownModel(BulbError):
     code = "bulb_unknown_model"
 
@@ -214,13 +220,20 @@ class BulbController:
                 f"The bulb at {self.address} did not respond while trying to {what}."
             ) from None
         except WizLightConnectionError as exc:
-            # pywizlight conflates two causes here: a genuine OSError reaching the
-            # device, and the device replying with an error payload. The detail is
-            # the only way to tell them apart, so it must be carried through.
-            raise BulbUnreachable(
-                f"Failed to {what} — the bulb at {self.address} reported: {exc}. "
-                f"This is either a network problem reaching it, or the bulb rejecting "
-                f"the request."
+            # pywizlight raises this for two unrelated causes, but distinguishes them
+            # in the exception chain: the network case is `raise ... from ex` on an
+            # OSError, while a device error payload is raised unchained. So the cause
+            # tells us which happened.
+            if isinstance(exc.__cause__, OSError):
+                raise BulbUnreachable(
+                    f"The bulb at {self.address} is unreachable on the network "
+                    f"while trying to {what}: {exc}"
+                ) from None
+            raise BulbRejected(
+                f"The bulb at {self.address} refused the request to {what}: {exc}. "
+                f"The device is reachable but rejected the command; on recent WiZ "
+                f"firmware this is usually because writes must be signed, which "
+                f"pywizlight does not implement (see its issue #213)."
             ) from None
         except WizLightNotKnownBulb:
             raise BulbUnknownModel(
