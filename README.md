@@ -271,6 +271,29 @@ back may differ by a point or two from the one written. That is expected.
 | `[capabilities_unknown]` | The bulb has not been reachable yet, so its Kelvin range and scene list are unknown. |
 | `[bulb_unsupported_operation]` | Your bulb model does not have that feature (e.g. colour on a white-only bulb). |
 
+## Acknowledgements
+
+This project is a thin layer over other people's work, and would not exist without it:
+
+- **[pywizlight](https://github.com/sbidy/pywizlight)** by [Stephan Traub](https://github.com/sbidy)
+  and contributors (MIT) — does the genuinely hard part: speaking WiZ's undocumented UDP
+  protocol, across firmware revisions and device models, including the per-model capability
+  tables and scene mappings this server relies on. Everything here sits on top of it.
+- **[Model Context Protocol](https://modelcontextprotocol.io)** and the
+  [Python SDK](https://github.com/modelcontextprotocol/python-sdk) (MIT) — the tool protocol
+  and the server implementation.
+- **[uvicorn](https://www.uvicorn.org/)** and **[Starlette](https://www.starlette.io/)**
+  (BSD-3-Clause) — the HTTP serving underneath, arriving as dependencies of the MCP SDK.
+- **[python-dotenv](https://github.com/theskumar/python-dotenv)** (BSD-3-Clause) —
+  `.env` loading.
+
+These are ordinary dependencies, fetched at install time rather than copied into this
+repository, so each ships its own license alongside it.
+
+## License
+
+[MIT](LICENSE). Use it as you see fit.
+
 ## Notes for maintainers
 
 **`pywizlight`'s README disagrees with its shipped code.** Verified against 0.6.6 — follow the
